@@ -4,7 +4,8 @@ DEFINE_BASECLASS( "base_tanktracktool" )
 ENT.Type      = "anim"
 ENT.Spawnable = true
 ENT.AdminOnly = false
-ENT.Category  = "tanktracktool"
+ENT.Category  = "Tank Track Tool"
+ENT.PrintName = "Tank Track Auto"
 
 local netvar = tanktracktool.netvar.new()
 
