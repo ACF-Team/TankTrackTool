@@ -76,5 +76,5 @@ function PANEL:Setup( editData )
     end
 end
 
-derma.DefineControl( "tanktracktoolEditor_Array", "", PANEL, "tanktracktoolEditor_Generic" )
+vgui.Register( "tanktracktoolEditor_Array", PANEL, "tanktracktoolEditor_Generic" )
 

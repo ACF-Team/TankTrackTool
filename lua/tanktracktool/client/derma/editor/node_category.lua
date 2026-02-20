@@ -48,7 +48,7 @@ function PANEL:Paint( w, h )
 end
 
 function PANEL:AddNode( strName )
-    local pNode = tanktracktoolEditor_Node.AddNode( self, strName )
+    local pNode = vgui.GetControlTable( "tanktracktoolEditor_Node" ).AddNode( self, strName )
 
     if not self.pNodeFirst then
         self.pNodeFirst = pNode
@@ -62,4 +62,4 @@ function PANEL:OnNodeAdded( pNode )
     self:GetRoot():OnNodeAdded( pNode )
 end
 
-derma.DefineControl( "tanktracktoolEditor_Category", "", PANEL, "DTree_Node" )
+vgui.Register( "tanktracktoolEditor_Category", PANEL, "DTree_Node" )

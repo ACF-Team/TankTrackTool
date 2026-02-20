@@ -394,4 +394,4 @@ function PANEL:WindowStopDragging()
     self:OnWindowStopDragging()
 end
 
-derma.DefineControl( "tanktracktoolEditor", "", PANEL, "DTree" )
+vgui.Register( "tanktracktoolEditor", PANEL, "DTree" )
