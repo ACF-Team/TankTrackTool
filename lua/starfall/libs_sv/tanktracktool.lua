@@ -85,9 +85,11 @@ return function(instance)
         CheckType(self, ents_metatable)
         local selfEnt = eunwrap(self)
         local entEnt = eunwrap(ent)
+
         if not canRunFunction() then return end
         if not isOwner(instance, selfEnt) or not isOwner(instance, entEnt) then SF.Throw("You do not own this entity!", 1) end
         if not canEdit(selfEnt, instance_plr) or not canEdit(entEnt, instance_plr) then SF.Throw("You cannot edit this entity!", 1) end
+
         if selfEnt:GetClass() ~= entEnt:GetClass() then SF.Throw("Entities must be the same class!", 1) end
         selfEnt:netvar_copy(instance_plr, entEnt)
     end
@@ -120,7 +122,7 @@ return function(instance)
 
         model = string.lower(model)
 
-        return makeEntity(instance, class, keep ~= 0, pos, Angle(ang[1], ang[2], ang[3]), model)
+        return makeEntity(instance, class, keep ~= 0, pos, ang, model)
     end
 
     --- Updates the values under the specified index
