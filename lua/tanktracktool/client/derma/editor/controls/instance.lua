@@ -152,4 +152,4 @@ end
 
 
 
-derma.DefineControl( "tanktracktoolEditor_Instance", "", PANEL, "tanktracktoolEditor_Generic" )
+vgui.Register( "tanktracktoolEditor_Instance", PANEL, "tanktracktoolEditor_Generic" )
