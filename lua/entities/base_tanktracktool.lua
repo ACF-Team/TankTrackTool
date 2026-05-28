@@ -9,7 +9,7 @@ DEFINE_BASECLASS( "base_anim" )
 ENT.Type      = "anim"
 ENT.Spawnable = false
 ENT.AdminOnly = true
-ENT.Category  = "tanktracktool"
+ENT.Category  = "Tank Track Tool"
 
 local tanktracktool = tanktracktool
 
