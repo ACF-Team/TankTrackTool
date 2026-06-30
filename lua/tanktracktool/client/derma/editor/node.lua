@@ -169,4 +169,4 @@ function PANEL:Setup( editData )
     self.Inner.m_Editor = self.m_Editor
 end
 
-derma.DefineControl( "tanktracktoolEditor_Node", "", PANEL, "DTree_Node" )
+vgui.Register( "tanktracktoolEditor_Node", PANEL, "DTree_Node" )

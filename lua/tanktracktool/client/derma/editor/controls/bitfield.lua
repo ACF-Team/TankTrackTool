@@ -84,4 +84,4 @@ function PANEL:Setup( editData )
     self:GetRow().nonvar = true
 end
 
-derma.DefineControl( "tanktracktoolEditor_Bitfield", "", PANEL, "tanktracktoolEditor_Generic" )
+vgui.Register( "tanktracktoolEditor_Bitfield", PANEL, "tanktracktoolEditor_Generic" )

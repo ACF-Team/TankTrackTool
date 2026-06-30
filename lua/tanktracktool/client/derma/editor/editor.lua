@@ -68,7 +68,6 @@ tanktracktool.render.overlay = cv_overlay:GetBool()
 ]]
 
 local PANEL = {}
-PANEL.AllowAutoRefresh = true
 
 function PANEL:GetEditorSkin()
     return editor.skin
@@ -82,13 +81,6 @@ function PANEL:OnEntityLost()
 end
 
 function PANEL:OnWindowStopDragging()
-end
-
-function PANEL:PreAutoRefresh()
-end
-
-function PANEL:PostAutoRefresh()
-    self:RebuildControls()
 end
 
 function PANEL:Init()
@@ -394,4 +386,4 @@ function PANEL:WindowStopDragging()
     self:OnWindowStopDragging()
 end
 
-derma.DefineControl( "tanktracktoolEditor", "", PANEL, "DTree" )
+vgui.Register( "tanktracktoolEditor", PANEL, "DTree" )
