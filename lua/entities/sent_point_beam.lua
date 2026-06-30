@@ -561,6 +561,10 @@ function ENT:Think()
 
     self.BaseClass.Think( self )
 
+    if self:IsDormant() then
+        return
+    end
+
     if self.tanktracktool_reset then
         self.tanktracktool_reset = nil
         mode:init( self )

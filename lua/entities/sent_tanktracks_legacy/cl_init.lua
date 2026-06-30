@@ -269,6 +269,10 @@ function ENT:Think()
 
     self.BaseClass.Think( self )
 
+    if self:IsDormant() then
+        return
+    end
+
     if self.tanktracktool_reset then
         if not self.netvar.entities then
             local e = {}
