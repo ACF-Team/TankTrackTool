@@ -21,6 +21,8 @@ if CLIENT then
 end
 
 if SERVER then
+    function ENT:UpdateTransmitState() return TRANSMIT_ALWAYS end
+
     function ENT:netvar_setLinks( tbl, ply )
         if not istable( tbl ) then
             return tanktracktool.netvar.setLinks( self, {}, ply )
