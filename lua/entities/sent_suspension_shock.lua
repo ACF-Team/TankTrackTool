@@ -245,10 +245,6 @@ function ENT:Think()
         return
     end
 
-    if self:IsDormant() then
-        return
-    end
-
     mode:think( self )
 end
 
