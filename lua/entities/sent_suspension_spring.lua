@@ -143,7 +143,7 @@ function mode:onThink( controller )
     local data = self:getData( controller )
 
     local e1, e2 = GetEntities( controller )
-    if not e1 or not e2 then
+    if not e1 or not e2 or ( e1:IsDormant() and e2:IsDormant() ) then
         self:setnodraw( controller, true )
         return
     end
