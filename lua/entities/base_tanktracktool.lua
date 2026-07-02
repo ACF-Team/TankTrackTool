@@ -34,8 +34,6 @@ function ENT:Think()
 end
 
 if SERVER then
-    function ENT:UpdateTransmitState() return TRANSMIT_ALWAYS end
-
     local function getmodel( ply, class )
         local a = ply:GetInfo( "tanktracktool_spawn_model" )
         if a and util.IsValidModel( a ) then return a end

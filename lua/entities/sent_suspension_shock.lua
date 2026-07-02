@@ -21,6 +21,8 @@ if CLIENT then
 end
 
 if SERVER then
+    function ENT:UpdateTransmitState() return TRANSMIT_ALWAYS end
+
     function ENT:netvar_setLinks( tbl, ply )
         if not istable( tbl ) then
             return tanktracktool.netvar.setLinks( self, {}, ply )
@@ -212,7 +214,7 @@ function mode:onThink( controller )
     local data = self:getData( controller )
 
     local e1, e2 = GetEntities( controller )
-    if not e1 or not e2 then
+    if not e1 or not e2 or ( e1:IsDormant() and e2:IsDormant() ) then
         self:setnodraw( controller, true )
         return
     end

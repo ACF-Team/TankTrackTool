@@ -21,6 +21,8 @@ if CLIENT then
 end
 
 if SERVER then
+    function ENT:UpdateTransmitState() return TRANSMIT_ALWAYS end
+
     function ENT:netvar_setLinks( tbl, ply )
         if not istable( tbl ) then
             return tanktracktool.netvar.setLinks( self, {}, ply )
@@ -416,7 +418,7 @@ end
 local function GetEntity( self, netkey, netlink )
     if netkey then netkey = self:GetNW2Entity( netkey ) end
     if IsValid( netkey ) then return netkey else
-        return IsValid( netlink ) and netlink or self
+        return IsValid( netlink ) and netlink
     end
 end
 
@@ -446,6 +448,8 @@ function mode:onThink( controller )
 
     local ent1 = GetEntity( controller, "netwire_Entity1", controller.netvar.entities.Entity1 )
     local ent2 = GetEntity( controller, "netwire_Entity2", controller.netvar.entities.Entity2 )
+    if not ent1 or not ent2 or ( ent1:IsDormant() and ent2:IsDormant() ) then return end
+
     local pos1 = ent1:LocalToWorld( controller:GetNW2Vector( "netwire_Offset1" ), Vector() )
     local pos2 = ent2:LocalToWorld( controller:GetNW2Vector( "netwire_Offset2" ), Vector() )
 
