@@ -25,7 +25,7 @@ local eyepos, eyedir = Vector(), Vector()
 local flashlightMODE
 
 hook.Add( "PostDrawOpaqueRenderables", "tanktracktoolRenderDraw", function( bDrawingDepth, isDrawSkybox, isDraw3DSkybox )
-    if bDrawingDepth or isDrawSkybox then return end
+    if bDrawingDepth or isDraw3DSkybox then return end
 
     flashlightMODE = LocalPlayer():FlashlightIsOn() --or #ents.FindByClass "*projectedtexture*" ~= 0
     eyepos = EyePos()
