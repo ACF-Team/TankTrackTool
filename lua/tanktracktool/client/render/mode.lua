@@ -167,7 +167,7 @@ end
 
 local function renderme( self, empty )
     local csent = self.csent
-    if csent and ( self.render_l or self.render_r ) then
+    if IsValid( csent ) and ( self.render_l or self.render_r ) then
         local model = self.model
         if csent.model ~= model then
             csent.model = model
