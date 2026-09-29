@@ -62,8 +62,11 @@ local function callOnRemove( controller )
             if loud then
                 tanktracktool.note( string.format( "removing csent\nkey: %s\nent: %s\n", tostring( k ), tostring( self) ) )
             end
-            v:Remove()
-            tanktracktool.render.edicts = tanktracktool.render.edicts - 1
+            if IsValid( v ) then
+                v:Remove()
+                tanktracktool.render.edicts = tanktracktool.render.edicts - 1
+            end
+            csents[k] = nil
         end
     end )
 end
@@ -259,6 +262,7 @@ function tanktracktool.render.mode( TYPE_ASSEM, CSENTS )
         for k, v in pairs( self.csents ) do
             if not IsValid( controller.tanktracktool_modeData_csents[k] ) then
                 local e = ents.CreateClientside( "base_anim" )
+                if not IsValid( e ) then continue end
                 controller.tanktracktool_modeData_csents[k] = e
 
                 e.RenderGroup = RENDERGROUP_OPAQUE
@@ -310,6 +314,7 @@ function tanktracktool.render.mode( TYPE_ASSEM, CSENTS )
         for k, v in pairs( self.csents ) do
             if not IsValid( controller.tanktracktool_modeData_csents[k] ) then
                 local e = ents.CreateClientside( "base_anim" )
+                if not IsValid( e ) then continue end
                 controller.tanktracktool_modeData_csents[k] = e
 
                 e.RenderGroup = RENDERGROUP_OPAQUE
