@@ -6,6 +6,7 @@ local fixtures = {}
 
 fixtures.files = {
     "tanktracktool/client/render/autotracks.lua",
+    "tanktracktool/client/render/autotracks_skinned.lua",
 }
 
 fixtures.side_y = 50
@@ -47,9 +48,15 @@ fixtures.roadwheels = { 2, 3, 4, 5, 6 }
 fixtures.ground = -40
 
 
-function fixtures.load()
+function fixtures.load( opts )
     local backend = fake.new()
+    if opts and opts.unsupported then
+        backend.env.mesh.BoneData = nil
+    end
     local tanktracktool = backend:loadTankTrackTool( fixtures.files )
+    if opts and opts.skinned == false then
+        backend:setConVar( "tanktracktool_autotracks_skinned", 0 )
+    end
     return backend, tanktracktool.autotracks
 end
 
@@ -143,7 +150,7 @@ function track_meta:contactFailures( frame, tolerance )
         for i = 1, self:count() do
             local center, radius = self:wheel( i, side )
             for _, offset in ipairs( { 0.3, -0.3 } ) do
-                local d = probe.clearance( frame, center, offset * width )
+                local d = probe.clearance( frame, center, offset * width, radius + tolerance + 1 )
                 if not d or math.abs( d - radius ) > tolerance then
                     fails[#fails + 1] = string.format( "side %d wheel %d y offset %+.1f: track is %s from the center, radius is %.2f",
                         side, i, offset, d and string.format( "%.3f", d ) or "nowhere", radius )

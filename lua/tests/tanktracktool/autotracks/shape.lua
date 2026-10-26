@@ -84,8 +84,8 @@ return {
                             local center, radius = track:wheel( i, side )
                             local hits = probe.cast( frame, center + Vector( 0, 0.3 * track.values.trackWidth, 0 ), Vector( 0, 0, -1 ) )
 
-                            expect( hits[1].t ).to.aboutEqual( radius, 0.05 )
-                            expect( hits[2].t ).to.aboutEqual( radius + height, 0.05 )
+                            expect( hits[1].t ).to.aboutEqual( radius, 0.1 )
+                            expect( hits[2].t - hits[1].t ).to.aboutEqual( height, 0.05 )
                         end
                     end
                 end

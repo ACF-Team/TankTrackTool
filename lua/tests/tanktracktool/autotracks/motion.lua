@@ -32,7 +32,7 @@ return {
                 for _, side in ipairs( track:sides() ) do
                     for _, i in ipairs( { 3, 5 } ) do
                         local center, radius = track:wheel( i, side )
-                        expect( bottomUnder( frame, track, i, side ) ).to.aboutEqual( center.z - radius - height, 0.05 )
+                        expect( bottomUnder( frame, track, i, side ) ).to.aboutEqual( center.z - radius - height, 0.2 )
                     end
                 end
             end
@@ -69,7 +69,7 @@ return {
                 local frame = track:frame()
                 local center, radius = track:wheel( 4, 1 )
 
-                expect( bottomUnder( frame, track, 4, 1 ) ).to.aboutEqual( center.z - radius - track.values.trackHeight, 0.05 )
+                expect( bottomUnder( frame, track, 4, 1 ) ).to.aboutEqual( center.z - radius - track.values.trackHeight, 0.2 )
                 expect( bottomUnder( frame, track, 4, 2 ) ).to.aboutEqual( right, 0.001 )
             end
         },

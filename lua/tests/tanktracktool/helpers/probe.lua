@@ -41,13 +41,55 @@ function probe.slab( frame, y )
     return frame.slabs[y]
 end
 
+local function bounds( tri )
+    if tri.minx then return tri end
+    local a, b, c = tri[1], tri[2], tri[3]
+    tri.minx, tri.maxx = math.min( a.x, b.x, c.x ), math.max( a.x, b.x, c.x )
+    tri.minz, tri.maxz = math.min( a.z, b.z, c.z ), math.max( a.z, b.z, c.z )
+    return tri
+end
+
+function probe.column( frame, x, y )
+    local slab = probe.slab( frame, y )
+    if not slab.grid then
+        local grid = {}
+        for _, tri in ipairs( slab.tris ) do
+            bounds( tri )
+            for cell = math.floor( tri.minx / 2 ), math.floor( tri.maxx / 2 ) do
+                grid[cell] = grid[cell] or {}
+                table.insert( grid[cell], tri )
+            end
+        end
+        slab.grid = grid
+    end
+    return slab.grid[math.floor( x / 2 )] or {}
+end
+
+function probe.near( frame, origin, dist )
+    local tris = {}
+    for _, tri in ipairs( probe.slab( frame, origin.y ).tris ) do
+        bounds( tri )
+        if tri.minx <= origin.x + dist and tri.maxx >= origin.x - dist and tri.minz <= origin.z + dist and tri.maxz >= origin.z - dist then
+            tris[#tris + 1] = tri
+        end
+    end
+    return { tris = tris }
+end
+
 function probe.cast( frame, origin, dir, maxdist )
     dir = dir:GetNormalized()
     local ox, oy, oz = origin.x, origin.y, origin.z
     local dx, dy, dz = dir.x, dir.y, dir.z
 
     local hits = {}
-    local tris = dy == 0 and probe.slab( frame, oy ).tris or frame.tris
+    local tris
+    if dx == 0 and dy == 0 then
+        tris = probe.column( frame, ox, oy )
+    elseif dy == 0 then
+        tris = probe.slab( frame, oy ).tris
+    else
+        tris = frame.tris
+    end
     for i = 1, #tris do
         local tri = tris[i]
         local t, u, v = intersect( tri, ox, oy, oz, dx, dy, dz )
@@ -79,13 +121,14 @@ function probe.first( frame, origin, dir, maxdist )
     return probe.cast( frame, origin, dir, maxdist )[1]
 end
 
-function probe.clearance( frame, center, yoffset, steps )
+function probe.clearance( frame, center, yoffset, maxdist, steps )
     steps = steps or 72
     local origin = Vector( center.x, center.y + ( yoffset or 0 ), center.z )
+    if maxdist then frame = probe.near( frame, origin, maxdist ) end
     local best
     for i = 0, steps - 1 do
         local a = ( i / steps ) * math_pi * 2
-        local hit = probe.first( frame, origin, Vector( math_cos( a ), 0, math_sin( a ) ) )
+        local hit = probe.first( frame, origin, Vector( math_cos( a ), 0, math_sin( a ) ), maxdist )
         if hit and ( not best or hit.t < best ) then best = hit.t end
     end
     return best
