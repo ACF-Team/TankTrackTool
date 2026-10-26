@@ -145,6 +145,10 @@ local function buildPath( self, i, detail, path )
 
     path.count = count
 
+    for k = #xs, count + 1, -1 do
+        xs[k], ys[k], zs[k] = nil, nil, nil
+    end
+
     local lens = path.len
     local total = 0
     for k = 1, count do
@@ -317,7 +321,7 @@ local function build( self, detail, paths )
     end
 
     -- keep the chords along the smallest wheel within a fraction of a unit of its curve
-    local spacing = math_Clamp( math_sqrt( 8 * math_max( radius, 0.5 ) * ( 0.4 / detail ) ), 0.25, 12 )
+    local spacing = math_Clamp( math_sqrt( 8 * math_max( radius, 0.5 ) * ( 0.8 / detail ) ), 0.25, 12 )
 
     for i = 1, #paths do
         local path = paths[i]
@@ -348,11 +352,48 @@ local function build( self, detail, paths )
 end
 
 
+-- bones are local to the track, so they only need moving when a wheel moves relative to it
+local function wheelsMoved( self, isdouble )
+    local last = self.autotracks_skin_last
+    local trackroots = self.tanktracktool_modeData.parts
+
+    local moved = #last ~= isdouble * #trackroots * 3
+    if not moved then
+        local k = 0
+        for i = 1, isdouble do
+            for r = 1, #trackroots do
+                local x, y, z = trackroots[r][1][i]:Unpack()
+                if math_abs( last[k + 1] - x ) > 0.001 or math_abs( last[k + 2] - y ) > 0.001 or math_abs( last[k + 3] - z ) > 0.001 then
+                    moved = true
+                    break
+                end
+                k = k + 3
+            end
+            if moved then break end
+        end
+    end
+
+    if moved then
+        local k = 0
+        for i = 1, isdouble do
+            for r = 1, #trackroots do
+                last[k + 1], last[k + 2], last[k + 3] = trackroots[r][1][i]:Unpack()
+                k = k + 3
+            end
+        end
+        for n = k + 1, #last do last[n] = nil end
+    end
+
+    return moved
+end
+
+
 --
 function skinned.setup( self )
     legacy.setup( self )
     self.autotracks_skin_dirty = true
     self.autotracks_skin_paths = self.autotracks_skin_paths or {}
+    self.autotracks_skin_last = {}
 end
 
 function skinned.think( self )
@@ -369,6 +410,13 @@ function skinned.think( self )
     self.autotracks_le_lastrot = self.autotracks_le_lastrot - self.autotracks_le_lastvel / self.autotracks_data_textureres
 
     local detail = cv_md:GetInt()
+    local skin = self.autotracks_skin
+
+    if not wheelsMoved( self, isdouble ) and skin and not self.autotracks_skin_dirty and skin.detail == detail and #skin == isdouble then
+        self.autotracks_data_ready = true
+        return
+    end
+
     local paths = self.autotracks_skin_paths
     for i = 1, isdouble do
         local path = paths[i]
@@ -383,7 +431,6 @@ function skinned.think( self )
     if not isBuilt( self, detail, paths ) then
         build( self, detail, paths )
     else
-        local skin = self.autotracks_skin
         for i = 1, isdouble do
             placeBones( skin[i], paths[i] )
         end

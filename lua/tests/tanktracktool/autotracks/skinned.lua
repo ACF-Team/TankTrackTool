@@ -140,6 +140,31 @@ return {
         },
 
         {
+            name = "Doesn't keep growing in memory while driving",
+            func = function( state )
+                local track = state.track():build()
+
+                local function drive( frames )
+                    for i = 1, frames do
+                        track:moveWheel( 4, Vector( 0, 0, i % 2 == 0 and 0.5 or -0.5 ) )
+                        track:think()
+                    end
+                end
+
+                drive( 50 )
+                collectgarbage( "collect" )
+                collectgarbage( "collect" )
+                local before = collectgarbage( "count" )
+
+                drive( 2000 )
+                collectgarbage( "collect" )
+                collectgarbage( "collect" )
+
+                expect( collectgarbage( "count" ) - before ).to.beLessThan( 64 )
+            end
+        },
+
+        {
             name = "Rebuilds once after an edit and frees the old meshes",
             func = function( state )
                 local track = state.track():build()
