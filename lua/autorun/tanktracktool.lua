@@ -10,6 +10,7 @@ if SERVER then
     AddCSLuaFile( "tanktracktool/client/render/mode.lua" )
     AddCSLuaFile( "tanktracktool/client/render/effects.lua" )
     AddCSLuaFile( "tanktracktool/client/render/autotracks.lua" )
+    AddCSLuaFile( "tanktracktool/client/render/autotracks_skinned.lua" )
 
     AddCSLuaFile( "tanktracktool/client/derma/editor/editor.lua" )
     AddCSLuaFile( "tanktracktool/client/derma/editor/node.lua" )
@@ -39,6 +40,7 @@ if CLIENT then
     include( "tanktracktool/client/render/mode.lua" )
     include( "tanktracktool/client/render/effects.lua" )
     include( "tanktracktool/client/render/autotracks.lua" )
+    include( "tanktracktool/client/render/autotracks_skinned.lua" )
 
     include( "tanktracktool/client/derma/editor/editor.lua" )
     include( "tanktracktool/client/derma/editor/node.lua" )
