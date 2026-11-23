@@ -49,6 +49,17 @@ return {
         },
 
         {
+            name = "Draws nothing until it has run once",
+            func = function( state )
+                local track = state.track()
+                expect( #track:frame().tris ).to.equal( 0 )
+
+                track:setup()
+                expect( #track:frame().tris ).to.equal( 0 )
+            end
+        },
+
+        {
             name = "Only draws one side when mirroring is off",
             func = function( state )
                 local track = state.track( { mirror = false } ):build()

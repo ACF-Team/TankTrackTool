@@ -3,7 +3,7 @@ local fixtures = include( "tests/tanktracktool/helpers/fixtures.lua" )
 local probe = include( "tests/tanktracktool/helpers/probe.lua" )
 
 local function pair( opts )
-    local b1, a1 = fixtures.load( { skinned = false } )
+    local b1, a1 = fixtures.loadLegacy()
     local b2, a2 = fixtures.load()
     return fixtures.track( b1, a1, opts ), fixtures.track( b2, a2, opts )
 end
@@ -207,39 +207,6 @@ return {
 
                 expect( #frame.draws ).to.beGreaterThan( 4 )
                 expect( track:contactFailures( frame, 0.5 ) ).to.equal( "" )
-            end
-        },
-
-        {
-            name = "Can be switched off for the old renderer",
-            func = function( state )
-                local track = state.track():build()
-                expect( track:frame().draws[1].skinned ).to.beTrue()
-
-                state.backend:setConVar( "tanktracktool_autotracks_skinned", 0 )
-                track:think()
-                local frame = track:frame()
-                expect( frame.draws[1].skinned ).to.beFalse()
-                expect( track:contactFailures( frame, 0.5 ) ).to.equal( "" )
-
-                state.backend:setConVar( "tanktracktool_autotracks_skinned", 1 )
-                track:think()
-                frame = track:frame()
-                expect( frame.draws[1].skinned ).to.beTrue()
-                expect( track:contactFailures( frame, 0.5 ) ).to.equal( "" )
-            end
-        },
-
-        {
-            name = "Uses the old renderer when the game can't skin meshes",
-            func = function()
-                local backend, autotracks = fixtures.load( { unsupported = true } )
-                local track = fixtures.track( backend, autotracks ):build()
-                local frame = track:frame()
-
-                expect( #frame.draws ).to.beGreaterThan( 0 )
-                expect( frame.draws[1].skinned ).to.beFalse()
-                expect( backend.stats.meshes ).to.equal( 0 )
             end
         },
     }

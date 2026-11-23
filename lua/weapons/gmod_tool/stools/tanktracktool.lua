@@ -1014,7 +1014,6 @@ local function ResetConvars()
         "tanktracktool_spawn_model",
         "tanktracktool_autotracks_disable",
         "tanktracktool_autotracks_detail_max",
-        "tanktracktool_autotracks_detail_incr",
         "tanktracktool_pointbeam_disable",
     }
 
@@ -1104,9 +1103,6 @@ local function BuildPanel_EntitySettings( self )
     cbox.OnChange = function( _, value )
         cbox.Label:SetTextColor( value and Color( 255, 0, 0 ) or nil )
     end
-
-    local cbox = pnl:CheckBox( "Adaptive Detail", "tanktracktool_autotracks_detail_incr" )
-    cbox:SetToolTip( "Track vertex detail increases as movement speed increases" )
 
     local sld = pnl:NumSlider( "Maximum Detail", "tanktracktool_autotracks_detail_max", 4, 16, 0 )
 

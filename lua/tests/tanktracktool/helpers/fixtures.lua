@@ -6,7 +6,6 @@ local fixtures = {}
 
 fixtures.files = {
     "tanktracktool/client/render/autotracks.lua",
-    "tanktracktool/client/render/autotracks_skinned.lua",
 }
 
 fixtures.side_y = 50
@@ -48,16 +47,16 @@ fixtures.roadwheels = { 2, 3, 4, 5, 6 }
 fixtures.ground = -40
 
 
-function fixtures.load( opts )
+function fixtures.load()
     local backend = fake.new()
-    if opts and opts.unsupported then
-        backend.env.mesh.BoneData = nil
-    end
     local tanktracktool = backend:loadTankTrackTool( fixtures.files )
-    if opts and opts.skinned == false then
-        backend:setConVar( "tanktracktool_autotracks_skinned", 0 )
-    end
     return backend, tanktracktool.autotracks
+end
+
+function fixtures.loadLegacy()
+    local backend = fake.new()
+    backend:loadTankTrackTool( fixtures.files )
+    return backend, backend:include( "tests/tanktracktool/helpers/legacy_autotracks.lua" )
 end
 
 
