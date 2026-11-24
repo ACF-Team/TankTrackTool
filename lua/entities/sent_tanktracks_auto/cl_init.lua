@@ -8,8 +8,8 @@ local tanktracktool = tanktracktool
 local math, util, string, table, render =
       math, util, string, table, render
 
-local next, pairs, FrameTime, Entity, IsValid, EyePos, EyeVector, Vector, Angle, Matrix, WorldToLocal, LocalToWorld, Lerp, LerpVector =
-      next, pairs, FrameTime, Entity, IsValid, EyePos, EyeVector, Vector, Angle, Matrix, WorldToLocal, LocalToWorld, Lerp, LerpVector
+local next, pairs, FrameTime, Entity, IsValid, EyePos, EyeVector, Vector, Angle, Matrix, WorldToLocal, Lerp, LerpVector =
+      next, pairs, FrameTime, Entity, IsValid, EyePos, EyeVector, Vector, Angle, Matrix, WorldToLocal, Lerp, LerpVector
 
 local sin, atan, icos = tanktracktool.util.sin, tanktracktool.util.atan, tanktracktool.util.icos
 
@@ -28,7 +28,26 @@ end
 hooks.netvar_set = function( self )
     self.tanktracktool_reset = true
 end
-hooks.netvar_syncData = function( self )
+local function sameValues( a, b )
+    for k, v in pairs( a ) do
+        local w = b[k]
+        if istable( v ) then
+            if not istable( w ) or not sameValues( v, w ) then return false end
+        elseif v ~= w then
+            return false
+        end
+    end
+    for k in pairs( b ) do
+        if a[k] == nil then return false end
+    end
+    return true
+end
+
+-- coming back into view resends everything, usually unchanged
+hooks.netvar_syncData = function( self, values )
+    local last = self.tanktracktool_values
+    self.tanktracktool_values = values
+    if last and sameValues( last, values ) then return end
     self.tanktracktool_reset = true
 end
 
@@ -40,12 +59,148 @@ end
 --[[
     base ent
 ]]
-local _mvec = Vector()
-local _mang = Angle()
+local math_sqrt, math_atan2, math_min, math_max, math_abs, math_exp = math.sqrt, math.atan2, math.min, math.max, math.abs, math.exp
+local math_deg = 180 / math.pi
 
-local pos_le, vel_le, rot_le
-local pos_ri, vel_ri, rot_ri
-local _empty
+local util_TraceHull = util.TraceHull
+
+local _tmat = Matrix()
+
+-- the hull frame, unpacked once per think by loadFrame
+local f11, f12, f13, f14, f21, f22, f23, f24, f31, f32, f33, f34
+
+local function loadFrame( matrix )
+    f11, f12, f13, f14, f21, f22, f23, f24, f31, f32, f33, f34 = matrix:Unpack()
+end
+
+local function frameToWorld( x, y, z )
+    return f14 + f11 * x + f12 * y + f13 * z, f24 + f21 * x + f22 * y + f23 * z, f34 + f31 * x + f32 * y + f33 * z
+end
+
+-- world direction to hull local
+local function frameToLocal( x, y, z )
+    return x * f11 + y * f21 + z * f31, x * f12 + y * f22 + z * f32, x * f13 + y * f23 + z * f33
+end
+
+-- same angles as VMatrix:GetAngles, written into ang
+local function setMatrixAngles( ang, m11, m21, m31, m12, m22, m32, m33 )
+    local xy = math_sqrt( m11 * m11 + m21 * m21 )
+    if xy > 0.001 then
+        ang:SetUnpacked( math_deg * math_atan2( -m31, xy ), math_deg * math_atan2( m21, m11 ), math_deg * math_atan2( m32, m33 ) )
+    else
+        ang:SetUnpacked( math_deg * math_atan2( -m31, xy ), math_deg * math_atan2( -m12, m22 ), 0 )
+    end
+end
+
+local function readTMat( pos, ang )
+    local m11, m12, m13, m14, m21, m22, m23, m24, m31, m32, m33, m34 = _tmat:Unpack()
+    if pos then pos:SetUnpacked( m14, m24, m34 ) end
+    if ang then setMatrixAngles( ang, m11, m21, m31, m12, m22, m32, m33 ) end
+end
+
+-- LocalToWorld into existing objects
+local function toWorld( matrix, lpos, lang, pos, ang )
+    _tmat:Set( matrix )
+    if lpos then _tmat:Translate( lpos ) end
+    if lang then _tmat:Rotate( lang ) end
+    readTMat( pos, ang )
+end
+
+local function setupTrace( trace )
+    if not trace.output then
+        trace.output, trace.start, trace.endpos = {}, Vector(), Vector()
+    end
+    return trace
+end
+
+-- how far one side moved along the hull since last frame, y is its offset to the left
+local function sideScroll( controller, key, brake, scroll, y )
+    local px, py, pz = f14 + f12 * y, f24 + f22 * y, f34 + f32 * y
+
+    -- not a Vector, float rounding made parked tanks scroll and kick up dust
+    local last = controller[key]
+    if not last then
+        last = { px, py, pz }
+        controller[key] = last
+    end
+
+    local vel = 0
+
+    if not controller:GetNW2Bool( brake, false ) then
+        local override = controller:GetNW2Float( scroll, 0 )
+        if override ~= 0 then
+            vel = -override
+        else
+            vel = f11 * ( last[1] - px ) + f21 * ( last[2] - py ) + f31 * ( last[3] - pz )
+        end
+    end
+
+    last[1], last[2], last[3] = px, py, pz
+
+    return vel
+end
+
+local function updateScroll( controller, values, isdouble )
+    local vel_le = sideScroll( controller, "autotracks_le_last", "netwire_leftBrake", "netwire_leftScroll", values.suspensionY )
+    controller.autotracks_le_lastvel = vel_le
+
+    if not isdouble then return vel_le * 360, 0 end
+
+    local vel_ri = sideScroll( controller, "autotracks_ri_last", "netwire_rightBrake", "netwire_rightScroll", -values.suspensionY )
+    controller.autotracks_ri_lastvel = vel_ri
+
+    return vel_le * 360, vel_ri * 360
+end
+
+-- the wheels trace again once the hull has moved this far, or this long after the last trace
+local trace_move = 0.25
+local trace_wait = 0.2
+
+-- how far out from the hull origin a rotation is measured
+local trace_reach = 128
+
+-- torsion arms settle over a few traced frames
+local trace_settle = 10
+
+-- moving tanks trace this often, in between the wheels land on the ground the last trace found
+local trace_rate = 1 / 30
+
+-- slow or parked tanks trace less often, returns whether to trace and whether the hull moved at all
+local function traceDue( data, id )
+    local last = data.traced
+    if not last then
+        -- spread over the interval so tanks don't all trace on the same frame
+        last = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, settle = 0, time = 0, due = 0, phase = ( id * 0.618034 ) % 1 }
+        data.traced = last
+    end
+
+    local move = math_abs( f14 - last[4] ) + math_abs( f24 - last[8] ) + math_abs( f34 - last[12] )
+        + trace_reach * ( math_abs( f11 - last[1] ) + math_abs( f21 - last[5] ) + math_abs( f31 - last[9] )
+        + math_abs( f12 - last[2] ) + math_abs( f22 - last[6] ) + math_abs( f32 - last[10] )
+        + math_abs( f13 - last[3] ) + math_abs( f23 - last[7] ) + math_abs( f33 - last[11] ) )
+
+    local now = CurTime()
+    if last.settle >= trace_settle then
+        if move < trace_move then
+            if now < last.time + trace_wait then return false, move > 0 end
+        elseif now < last.due then
+            return false, true
+        end
+    end
+
+    last[1], last[2], last[3], last[4] = f11, f12, f13, f14
+    last[5], last[6], last[7], last[8] = f21, f22, f23, f24
+    last[9], last[10], last[11], last[12] = f31, f32, f33, f34
+    last.time = now
+    if last.settle == trace_settle - 1 then
+        last.due = now + trace_rate * last.phase
+    else
+        last.due = math_max( last.due + trace_rate, now )
+    end
+    last.settle = last.settle + 1
+
+    return true, true
+end
 
 local function setRenderBounds( self )
     self:autotracks_setMatrix()
@@ -93,6 +248,8 @@ function ENT:autotracks_setMatrix()
         matrix = self.autotracks_matrix
     end
 
+    -- SetAngles keeps the old scale, which drifts a bit every frame
+    matrix:Identity()
     matrix:SetTranslation( base:GetPos() )
     matrix:SetAngles( axis:GetAngles() )
 end
@@ -104,32 +261,151 @@ function ENT:autotracks_getMatrix()
     return self.autotracks_matrix:GetTranslation(), self.autotracks_matrix:GetAngles()
 end
 
-function ENT:autotracks_getGroundFX( width )
-    local scale = self.netvar.values.systemEffScale
-    if not scale or scale == 0 then return end
+--[[
+    ground dust, one particle system per side moved through its control points
+]]
+local _dustpos = Vector()
+local _dustvalue = Vector()
 
-    local max = width * scale
-
-    local scale_le = math.min( max, 2 * math.abs( self.autotracks_le_lastvel ) )
-    local scale_ri = math.min( max, 2 * math.abs( self.autotracks_ri_lastvel ) )
-
-    if scale_le == 0 then scale_le = nil end
-    if scale_ri == 0 then scale_ri = nil end
-
-    return scale_le, scale_ri
+-- where each side touched the ground on the last traced frame
+local function getContact( data )
+    local contact = data.contact
+    if not contact then
+        contact = { { traces = 0, hits = 0 }, { traces = 0, hits = 0 } }
+        data.contact = contact
+    end
+    return contact
 end
 
-local eff = "tanktracks_dust"
-function ENT:autotracks_playGroundFX( pos, scale )
-    local fxdata = EffectData()
+local function contactReset( contact )
+    for side = 1, 2 do
+        local c = contact[side]
+        c.traces, c.hits, c.rear, c.front = 0, 0, math.huge, -math.huge
+    end
+end
 
-    fxdata:SetOrigin( pos )
-    fxdata:SetScale( scale )
+local function contactAdd( c, result )
+    c.traces = c.traces + 1
+    if not result.Hit then return end
 
-    util.Effect( eff, fxdata )
+    c.hits = c.hits + 1
+
+    -- kept in hull space so it moves with the hull between traces
+    local hx, hy, hz = result.HitPos:Unpack()
+    local x, y, z = frameToLocal( hx - f14, hy - f24, hz - f34 )
+    if x < c.rear then c.rear, c.rx, c.ry, c.rz = x, x, y, z end
+    if x > c.front then c.front, c.fx, c.fy, c.fz = x, x, y, z end
+end
+
+-- where a wheel dropped from s meets the ground, traced or on the plane the last trace hit
+local function groundHit( trace, sx, sy, sz, len, contact, real )
+    local ex, ey, ez = sx - f13 * len, sy - f23 * len, sz - f33 * len
+
+    if real then
+        trace.start:SetUnpacked( sx, sy, sz )
+        trace.endpos:SetUnpacked( ex, ey, ez )
+
+        local result = util_TraceHull( trace )
+        contactAdd( contact, result )
+
+        local hx, hy, hz = result.HitPos:Unpack()
+        trace.frac = result.Fraction
+        if result.Hit and not result.StartSolid then
+            local nx, ny, nz = result.HitNormal:Unpack()
+            trace.nx, trace.ny, trace.nz, trace.d = nx, ny, nz, nx * hx + ny * hy + nz * hz
+        else
+            trace.d = nil
+        end
+        return hx, hy, hz
+    end
+
+    local t = trace.frac or 1
+    local d = trace.d
+    if d then
+        local nx, ny, nz = trace.nx, trace.ny, trace.nz
+        local ds = nx * sx + ny * sy + nz * sz - d
+        local de = nx * ex + ny * ey + nz * ez - d
+        if ds > 0 then t = de < 0 and ds / ( ds - de ) or 1 end
+    end
+    return sx + ( ex - sx ) * t, sy + ( ey - sy ) * t, sz + ( ez - sz ) * t
+end
+
+local function stopDust( self )
+    local dust = self.autotracks_dust
+    if not dust then return end
+    for side = 1, 2 do
+        if IsValid( dust[side] ) then dust[side]:StopEmission() end
+    end
+    self.autotracks_dust = nil
+end
+
+-- tanks that stop thinking (off screen, disabled) stop kicking up dust
+local function idleDust( self )
+    local dust = self.autotracks_dust
+    if not dust then return end
+    for side = 1, 2 do
+        if IsValid( dust[side] ) then dust[side]:SetControlPoint( 2, vector_origin ) end
+    end
+end
+
+local function updateDust( controller, side, vel, values, c )
+    local dust = controller.autotracks_dust
+    local fx = dust and dust[side]
+
+    local effscale = values.systemEffScale or 0
+
+    -- smoothed, the hull's position can arrive in steps and the raw speed jumps between 0 and a lot
+    local smooth = controller.autotracks_dust_speed
+    if not smooth then
+        smooth = { 0, 0 }
+        controller.autotracks_dust_speed = smooth
+    end
+
+    local ft = math_max( FrameTime(), 0.001 )
+    local speed = smooth[side] + ( math_abs( vel ) / ft - smooth[side] ) * ( 1 - math_exp( -ft / 0.3 ) )
+    smooth[side] = speed
+
+    if effscale <= 0 or c.hits == 0 or speed < 5 then
+        if IsValid( fx ) then fx:SetControlPoint( 2, vector_origin ) end
+        return
+    end
+
+    _dustpos:SetUnpacked( frameToWorld( c.rx, c.ry, c.rz ) )
+
+    if not IsValid( fx ) then
+        if not dust then
+            dust = { light = { 0, 0 } }
+            controller.autotracks_dust = dust
+            controller:CallOnRemove( "tanktracktool_dust", stopDust )
+        end
+        fx = CreateParticleSystemNoEntity( "tanktracktool_dust", _dustpos )
+        if not IsValid( fx ) then return end
+        dust[side] = fx
+        dust.light[side] = 0
+    end
+
+    fx:SetControlPoint( 0, _dustpos )
+    _dustpos:SetUnpacked( frameToWorld( c.fx, c.fy, c.fz ) )
+    fx:SetControlPoint( 1, _dustpos )
+
+    local width = values.trackEnable and values.trackWidth or values.wheelWidth
+    _dustvalue:SetUnpacked( math_min( 1, speed / 200 ) * c.hits / c.traces, math_min( width * effscale, 0.05 * speed ), 0 )
+    fx:SetControlPoint( 2, _dustvalue )
+
+    -- the light under the tank, sampled a few times a second
+    local now = CurTime()
+    if dust.light[side] < now then
+        dust.light[side] = now + 0.25
+
+        local r, g, b = render.GetLightColor( _dustpos ):Unpack()
+        _dustvalue:SetUnpacked( 255 * math_min( 1, ( r * 2 ) ^ 0.4545 ), 255 * math_min( 1, ( g * 2 ) ^ 0.4545 ), 255 * math_min( 1, ( b * 2 ) ^ 0.4545 ) )
+        fx:SetControlPoint( 3, _dustvalue )
+    end
 end
 
 function ENT:Think()
+    idleDust( self )
+
     if tanktracktool.disable_autotracks then
         self.tanktracktool_reset = true
         return
@@ -146,13 +422,12 @@ function ENT:Think()
 
         local values = self.netvar.values
         if not values then return end
+        self.tanktracktool_values = values
 
         self.autotracks_dotracks = values.trackEnable ~= 0
         self.autotracks_isdouble = values.systemMirror ~= 0
-        self.autotracks_le_lastpos = self.autotracks_le_lastpos or Vector()
         self.autotracks_le_lastvel = self.autotracks_le_lastvel or 1
         self.autotracks_le_lastrot = self.autotracks_le_lastrot or 1
-        self.autotracks_ri_lastpos = self.autotracks_ri_lastpos or Vector()
         self.autotracks_ri_lastvel = self.autotracks_ri_lastvel or 1
         self.autotracks_ri_lastrot = self.autotracks_ri_lastrot or 1
         self:autotracks_setMatrix()
@@ -410,101 +685,66 @@ do
         end
     end
 
-    function modes.classic:onThink( controller )
-        local pos, ang = controller:autotracks_getMatrix()
-        local up, ri, fo = ang:Up(), ang:Right(), ang:Forward()
+    -- drops a wheel onto the ground under poslocal, trackpos keeps where it landed in hull space
+    local function traceWheel( wheel, trace, poslocal, trackpos, contact, real )
+        local len, height = wheel.trace_len, wheel.trackHeight or wheel.radius
 
-        local trace_len, trace_dir
-        local wheel_rad, wheel_dir
+        local sx, sy, sz = frameToWorld( poslocal:Unpack() )
+        local hx, hy, hz = groundHit( trace, sx, sy, sz, len, contact, real )
+        hx, hy, hz = hx + f13 * height, hy + f23 * height, hz + f33 * height
+
+        -- hacky localized vector used by the track renderer written for the old system, I hate it but I'm not redoing it
+        trackpos:SetUnpacked( frameToLocal( hx - f14, hy - f24, hz - f34 ) )
+    end
+
+    function modes.classic:onThink( controller )
+        local frame = controller.autotracks_matrix
+        loadFrame( frame )
 
         local isdouble = controller.autotracks_isdouble
         local values = controller.netvar.values
+
+        local rot_le, rot_ri = updateScroll( controller, values, isdouble )
+
         local data = self:getData( controller )
+        local trace, moved = traceDue( data, controller:EntIndex() )
+        if not trace and not moved and rot_le == 0 and rot_ri == 0 then return end
 
-        pos_le = pos - ri * values.suspensionY
+        local contact = getContact( data )
+        if trace then contactReset( contact ) end
 
-        if controller:GetNW2Bool( "netwire_leftBrake", false ) then
-            rot_le = 0
-            vel_le = 0
-        else
-            local override = controller:GetNW2Float( "netwire_leftScroll", 0 )
-            vel_le = override ~= 0 and -override or fo:Dot( controller.autotracks_le_lastpos - pos_le )
-            rot_le = vel_le * 360
-        end
-
-        controller.autotracks_le_lastpos = pos_le
-        controller.autotracks_le_lastvel = vel_le
-
-        if isdouble then
-            pos_ri = pos + ri * values.suspensionY
-
-            if controller:GetNW2Bool( "netwire_rightBrake", false ) then
-                rot_le = 0
-                vel_le = 0
-            else
-                local override = controller:GetNW2Float( "netwire_rightScroll", 0 )
-                vel_ri = override ~= 0 and -override or fo:Dot( controller.autotracks_ri_lastpos - pos_ri )
-                rot_ri = vel_ri * 360
-            end
-
-            controller.autotracks_ri_lastpos = pos_ri
-            controller.autotracks_ri_lastvel = vel_ri
-        end
-
-        local fx_le, fx_ri = controller:autotracks_getGroundFX( values.trackEnable and values.trackWidth or values.wheelWidth )
         local parts = self:getParts( controller )
 
         for i = 1, #parts do
-            local parts = parts[i]
-            local wheel = parts[1]
-
+            local wheel = parts[i][1]
             local enabled = wheel.suspension
-            if enabled then
-                if trace_len ~= wheel.trace_len then
-                    trace_len = wheel.trace_len
-                    trace_dir = -trace_len * up
-                end
-                if wheel_rad ~= wheel.radius then
-                    wheel_rad = wheel.radius
-                    wheel_dir = ( wheel.trackHeight or wheel_rad ) * up
-                end
-            end
 
             wheel.le_anglocal.p = wheel.le_anglocal.p - rot_le / wheel.circumference
 
             if enabled then
-                wheel.le_trace.start, wheel.le_angworld = LocalToWorld( wheel.le_poslocal, wheel.le_anglocal, pos, ang )
-                wheel.le_trace.endpos = wheel.le_trace.start + trace_dir
-
-                local trace = util.TraceHull( wheel.le_trace )
-                if fx_le and trace.Hit then controller:autotracks_playGroundFX( trace.HitPos, fx_le ) end
-
-                wheel.le_posworld = trace.HitPos + wheel_dir
-
-                -- hacky localized vector used by the track renderer written for the old system, I hate it but I'm not redoing it
-                wheel[1], _empty = WorldToLocal( wheel.le_posworld, _mang, pos, ang )
+                traceWheel( wheel, setupTrace( wheel.le_trace ), wheel.le_poslocal, wheel[1], contact[1], trace )
+                wheel.le_posworld:SetUnpacked( frameToWorld( wheel[1]:Unpack() ) )
+                toWorld( frame, nil, wheel.le_anglocal, nil, wheel.le_angworld )
             else
-                wheel.le_posworld, wheel.le_angworld = LocalToWorld( wheel.le_poslocal, wheel.le_anglocal, pos, ang )
+                toWorld( frame, wheel.le_poslocal, wheel.le_anglocal, wheel.le_posworld, wheel.le_angworld )
             end
 
             if isdouble then
                 wheel.ri_anglocal.p = wheel.ri_anglocal.p + rot_ri / wheel.circumference
 
                 if enabled then
-                    wheel.ri_trace.start, wheel.ri_angworld = LocalToWorld( wheel.ri_poslocal, wheel.ri_anglocal, pos, ang )
-                    wheel.ri_trace.endpos = wheel.ri_trace.start + trace_dir
-
-                    local trace = util.TraceHull( wheel.ri_trace )
-                    if fx_ri and trace.Hit then controller:autotracks_playGroundFX( trace.HitPos, fx_ri ) end
-
-                    wheel.ri_posworld = trace.HitPos + wheel_dir
-
-                    -- hacky localized vector used by the track renderer written for the old system, I hate it but I'm not redoing it
-                    wheel[2], _empty = WorldToLocal( wheel.ri_posworld, _mang, pos, ang )
+                    traceWheel( wheel, setupTrace( wheel.ri_trace ), wheel.ri_poslocal, wheel[2], contact[2], trace )
+                    wheel.ri_posworld:SetUnpacked( frameToWorld( wheel[2]:Unpack() ) )
+                    toWorld( frame, nil, wheel.ri_anglocal, nil, wheel.ri_angworld )
                 else
-                    wheel.ri_posworld, wheel.ri_angworld = LocalToWorld( wheel.ri_poslocal, wheel.ri_anglocal, pos, ang )
+                    toWorld( frame, wheel.ri_poslocal, wheel.ri_anglocal, wheel.ri_posworld, wheel.ri_angworld )
                 end
             end
+        end
+
+        updateDust( controller, 1, controller.autotracks_le_lastvel, values, contact[1] )
+        if isdouble then
+            updateDust( controller, 2, controller.autotracks_ri_lastvel, values, contact[2] )
         end
     end
 
@@ -753,6 +993,9 @@ do
                         damper.ri_poslocal.y = arm.ri_poslocal.y
                         damper.ri_anglocal.y = 180
                     end
+
+                    -- bone 2 is the only one that moves, so the dampers can still be drawn batched
+                    damper.batchmove = { bone = 2, le = damper.bone2pos_le, ri = damper.bone2pos_ri }
                 end
             end
 
@@ -760,194 +1003,127 @@ do
         end
     end
 
+    local sides = {
+        { s = 1, track = 1, trace = "le_trace", origin = "le_origin", offset = "le_offsetX", offsetK = "le_offsetK", poslocal = "le_poslocal", posworld = "le_posworld", anglocal = "le_anglocal", angworld = "le_angworld", bone2pos = "bone2pos_le" },
+        { s = -1, track = 2, trace = "ri_trace", origin = "ri_origin", offset = "ri_offsetX", offsetK = "ri_offsetK", poslocal = "ri_poslocal", posworld = "ri_posworld", anglocal = "ri_anglocal", angworld = "ri_angworld", bone2pos = "bone2pos_ri" },
+    }
+
+    -- traces and solves the arm angle, s is 1 on the left and -1 on the right
+    local function torsionSolve( frame, side, wheel, arm, wheel_radius, contact, real )
+        local s = side.s
+        local trace = setupTrace( wheel[side.trace] )
+
+        -- trace from arm origin to ground
+        local ox, oy, oz = arm[side.origin]:Unpack()
+        local kx, ky, kz = arm[side.offset]:Unpack()
+        local sx, sy, sz = frameToWorld( ox - s * kx, oy - s * ky, oz - s * kz )
+        local hx, hy, hz = groundHit( trace, sx, sy, sz, wheel.trace_len, contact, real )
+
+        -- inverse kinematics to solve the arm angle
+        local ax, ay, az = frameToWorld( arm[side.poslocal]:Unpack() )
+        local arm_length = arm.barlengthbeam
+        local dx, dy, dz = hx - ax, hy - ay, hz - az
+        local dist = math_min( math_sqrt( dx * dx + dy * dy + dz * dz ), arm_length + wheel_radius )
+        local lx, _, lz = frameToLocal( dx, dy, dz )
+
+        local arm_ang_l = arm[side.anglocal]
+        arm_ang_l.p = atan( s * lx, lz ) + s * icos( dist, arm_length, wheel_radius ) * ( arm[side.offsetK] > 0 and 1 or -1 )
+
+        -- protect against divide by zero
+        if arm_ang_l.p ~= arm_ang_l.p then arm_ang_l.p = 0 end
+
+        -- forward kinematics to adjust the trace position in the next tick
+        arm[side.offset].x = -sin( arm_ang_l.p ) * arm_length - s * arm[side.offsetK]
+    end
+
+    -- puts the arm, wheel and damper where the hull and the solved arm angle say
+    local function torsionPlace( frame, side, wheel, arm, damper )
+        local s = side.s
+        local arm_ang_l = arm[side.anglocal]
+
+        arm[side.posworld]:SetUnpacked( frameToWorld( arm[side.poslocal]:Unpack() ) )
+        toWorld( frame, nil, arm_ang_l, nil, arm[side.angworld] )
+
+        -- position wheel at the end of the arm
+        _tmat:Set( frame )
+        _tmat:Translate( arm[side.poslocal] )
+        _tmat:Rotate( arm_ang_l )
+        _tmat:Translate( wheel[side.poslocal] )
+        _tmat:Rotate( wheel[side.anglocal] )
+
+        local wheelpos = wheel[side.posworld]
+        readTMat( wheelpos, wheel[side.angworld] )
+
+        local wx, wy, wz = wheelpos:Unpack()
+
+        -- hacky localized vector used by the track renderer written for the old system, I hate it but I'm not redoing it
+        wheel[side.track]:SetUnpacked( frameToLocal( wx - f14, wy - f24, wz - f34 ) )
+
+        if damper then
+            local px, py, pz = frameToWorld( damper[side.poslocal]:Unpack() )
+            damper[side.posworld]:SetUnpacked( px, py, pz )
+
+            local dx, dy, dz = wx - px, wy - py, wz - pz
+            local lx, _, lz = frameToLocal( dx, dy, dz )
+
+            local damper_ang_l = damper[side.anglocal]
+            damper_ang_l.p = atan( s * lx, lz )
+            toWorld( frame, nil, damper_ang_l, nil, damper[side.angworld] )
+            damper[side.bone2pos].y = math_sqrt( dx * dx + dy * dy + dz * dz ) / arm.barsize - damper.zlength - 1
+        end
+    end
+
     function modes.torsion:onThink( controller )
-        --if true then return end
-
-        local pos, ang = controller:autotracks_getMatrix()
-        local up, ri, fo = ang:Up(), ang:Right(), ang:Forward()
-
-        local trace_len, trace_dir
+        local frame = controller.autotracks_matrix
+        loadFrame( frame )
 
         local isdouble = controller.autotracks_isdouble
         local values = controller.netvar.values
+
+        local rot_le, rot_ri = updateScroll( controller, values, isdouble )
+
         local data = self:getData( controller )
+        local trace, moved = traceDue( data, controller:EntIndex() )
+        if not trace and not moved and rot_le == 0 and rot_ri == 0 then return end
 
-        pos_le = pos - ri * values.suspensionY
+        local contact = getContact( data )
+        if trace then contactReset( contact ) end
 
-        if controller:GetNW2Bool( "netwire_leftBrake", false ) then
-            rot_le = 0
-            vel_le = 0
-        else
-            local override = controller:GetNW2Float( "netwire_leftScroll", 0 )
-            vel_le = override ~= 0 and -override or fo:Dot( controller.autotracks_le_lastpos - pos_le )
-            rot_le = vel_le * 360
-        end
-
-        controller.autotracks_le_lastpos = pos_le
-        controller.autotracks_le_lastvel = vel_le
-
-        if isdouble then
-            pos_ri = pos + ri * values.suspensionY
-
-            if controller:GetNW2Bool( "netwire_rightBrake", false ) then
-                rot_le = 0
-                vel_le = 0
-            else
-                local override = controller:GetNW2Float( "netwire_rightScroll", 0 )
-                vel_ri = override ~= 0 and -override or fo:Dot( controller.autotracks_ri_lastpos - pos_ri )
-                rot_ri = vel_ri * 360
-            end
-
-            controller.autotracks_ri_lastpos = pos_ri
-            controller.autotracks_ri_lastvel = vel_ri
-        end
-
-        local fx_le, fx_ri = controller:autotracks_getGroundFX( values.trackEnable and values.trackWidth or values.wheelWidth )
         local parts = self:getParts( controller )
 
         for i = 1, #parts do
-            local parts = parts[i]
-            local wheel = parts[1]
+            local assem = parts[i]
+            local wheel = assem[1]
 
-            if not wheel.suspension then
-                wheel.le_anglocal.p = wheel.le_anglocal.p - rot_le / wheel.circumference
-                wheel.le_posworld, wheel.le_angworld = LocalToWorld( wheel.le_poslocal, wheel.le_anglocal, pos, ang )
-
-                if isdouble then
-                    wheel.ri_anglocal.p = wheel.ri_anglocal.p + rot_ri / wheel.circumference
-                    wheel.ri_posworld, wheel.ri_angworld = LocalToWorld( wheel.ri_poslocal, wheel.ri_anglocal, pos, ang )
-
-                end
-
-                goto GOTS_NO_ARMS
-            end
-
-            --[[
-
-                everything below is a complete disaster and should probably be all be redone to
-                use local coordinates or matrices or something
-
-            ]]
-
-            local arm = parts[2]
-
-            if trace_len ~= wheel.trace_len then
-                trace_len = wheel.trace_len
-                trace_dir = trace_len * up
-            end
-
-            local arm_length = arm.barlengthbeam
-            local wheel_radius = values.trackEnable and wheel.trackHeight or wheel.radius
-
-
-            -- LEFT SIDE
-            -- trace from arm origin to ground
-            local wheel_trace = wheel.le_trace
-            wheel_trace.start = LocalToWorld( arm.le_origin - arm.le_offsetX, _mang, pos, ang )
-            wheel_trace.endpos = wheel_trace.start - trace_dir
-
-            local trace = util.TraceHull( wheel_trace )
-            if fx_le and trace.Hit then controller:autotracks_playGroundFX( trace.HitPos, fx_le ) end
-
-            -- update the arm's world position
-            arm.le_posworld = LocalToWorld( arm.le_poslocal, _mang, pos, ang )
-
-            local arm_pos_w = arm.le_posworld
-            local arm_ang_l = arm.le_anglocal
-
-            -- inverse kinematics to solve the arm angle
-            local diff = trace.HitPos - arm_pos_w
-            local dist = math.min( diff:Length(), arm_length + wheel_radius )
-            local axis = WorldToLocal( diff + pos, _mang, pos, ang )
-
-            arm_ang_l.p = atan( axis.x, axis.z ) + icos( dist, arm_length, wheel_radius ) * ( arm.le_offsetK > 0 and 1 or -1 )
-
-            -- protect against divide by zero
-            if arm_ang_l.p ~= arm_ang_l.p then arm_ang_l.p = 0 end
-
-            -- update the arm's world angle
-            _empty, arm.le_angworld = LocalToWorld( _mvec, arm_ang_l, pos, ang )
-
-            -- forward kinematics to adjust the trace position in the next tick
-            arm.le_offsetX.x = -sin( arm_ang_l.p ) * arm_length - arm.le_offsetK
-
-            -- position wheel at the end of the arm
-            local wheel_ang_l = wheel.le_anglocal
-
-            wheel_ang_l.p = wheel_ang_l.p - rot_le / wheel.circumference
-            wheel.le_posworld, wheel.le_angworld = LocalToWorld( wheel.le_poslocal, wheel_ang_l, arm_pos_w, arm.le_angworld )
-
-            -- hacky localized vector used by the track renderer written for the old system, I hate it but I'm not redoing it
-            wheel[1], _ = WorldToLocal( wheel.le_posworld, _mang, pos, ang )
-
-            -- damper
-            local damper = parts[3]--parts.damper
-            if damper then
-                damper.le_posworld = LocalToWorld( damper.le_poslocal, _mang, pos, ang )
-
-                local diff = wheel.le_posworld - damper.le_posworld
-                local axis = WorldToLocal( diff + pos, _mang, pos, ang )
-
-                damper.le_anglocal.p = atan( axis.x, axis.z )
-                _empty, damper.le_angworld = LocalToWorld( _mvec, damper.le_anglocal, pos, ang )
-                damper.bone2pos_le.y = ( diff:Length() ) / arm.barsize - damper.zlength - 1
-            end
-
-
-            -- RIGHT SIDE
+            wheel.le_anglocal.p = wheel.le_anglocal.p - rot_le / wheel.circumference
             if isdouble then
-                -- trace from arm origin to ground
-                local wheel_trace = wheel.ri_trace
-                wheel_trace.start, _empty = LocalToWorld( arm.ri_origin + arm.ri_offsetX, _mang, pos, ang )
-                wheel_trace.endpos = wheel_trace.start - trace_dir
-
-                local trace = util.TraceHull( wheel_trace )
-                if fx_ri and trace.Hit then controller:autotracks_playGroundFX( trace.HitPos, fx_ri ) end
-
-                -- update the arm's world position
-                arm.ri_posworld = LocalToWorld( arm.ri_poslocal, _mang, pos, ang )
-
-                local arm_pos_w = arm.ri_posworld
-                local arm_ang_l = arm.ri_anglocal
-
-                -- inverse kinematics to solve the arm angle
-                local diff = trace.HitPos - arm_pos_w
-                local dist = math.min( diff:Length(), arm_length + wheel_radius )
-                local axis = WorldToLocal( diff + pos, _mang, pos, ang )
-
-                arm_ang_l.p = atan( -axis.x, axis.z ) - icos( dist, arm_length, wheel_radius ) * ( arm.ri_offsetK > 0 and 1 or -1 )
-
-                -- protect against divide by zero
-                if arm_ang_l.p ~= arm_ang_l.p then arm_ang_l.p = 0 end
-
-                -- update the arm's world angle
-                _empty, arm.ri_angworld = LocalToWorld( _mvec, arm_ang_l, pos, ang )
-
-                -- forward kinematics to adjust the trace position in the next tick
-                arm.ri_offsetX.x = -sin( arm_ang_l.p ) * arm_length + arm.ri_offsetK
-
-                -- position wheel at the end of the arm
-                local wheel_ang_l = wheel.ri_anglocal
-
-                wheel_ang_l.p = wheel_ang_l.p + rot_ri / wheel.circumference
-                wheel.ri_posworld, wheel.ri_angworld = LocalToWorld( wheel.ri_poslocal, wheel_ang_l, arm_pos_w, arm.ri_angworld )
-
-                -- hacky localized vector used by the track renderer written for the old system, I hate it but I'm not redoing it
-                wheel[2], _ = WorldToLocal( wheel.ri_posworld, _mang, pos, ang )
-
-                if damper then
-                    damper.ri_posworld = LocalToWorld( damper.ri_poslocal, _mang, pos, ang )
-
-                    local diff = wheel.ri_posworld - damper.ri_posworld
-                    local axis = WorldToLocal( diff + pos, _mang, pos, ang )
-
-                    damper.ri_anglocal.p = atan( -axis.x, axis.z )
-                    _empty, damper.ri_angworld = LocalToWorld( _mvec, damper.ri_anglocal, pos, ang )
-                    damper.bone2pos_ri.y = ( diff:Length() ) / arm.barsize - damper.zlength - 1
-                end
+                wheel.ri_anglocal.p = wheel.ri_anglocal.p + rot_ri / wheel.circumference
             end
 
-            ::GOTS_NO_ARMS::
+            if wheel.suspension then
+                local arm, damper = assem[2], assem[3]
+
+                local wheel_radius = values.trackEnable and wheel.trackHeight or wheel.radius
+                torsionSolve( frame, sides[1], wheel, arm, wheel_radius, contact[1], trace )
+                if isdouble then
+                    torsionSolve( frame, sides[2], wheel, arm, wheel_radius, contact[2], trace )
+                end
+
+                torsionPlace( frame, sides[1], wheel, arm, damper )
+                if isdouble then
+                    torsionPlace( frame, sides[2], wheel, arm, damper )
+                end
+            else
+                toWorld( frame, wheel.le_poslocal, wheel.le_anglocal, wheel.le_posworld, wheel.le_angworld )
+                if isdouble then
+                    toWorld( frame, wheel.ri_poslocal, wheel.ri_anglocal, wheel.ri_posworld, wheel.ri_angworld )
+                end
+            end
+        end
+
+        updateDust( controller, 1, controller.autotracks_le_lastvel, values, contact[1] )
+        if isdouble then
+            updateDust( controller, 2, controller.autotracks_ri_lastvel, values, contact[2] )
         end
     end
 

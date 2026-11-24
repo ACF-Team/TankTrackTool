@@ -383,6 +383,11 @@ end
 local function isBuilt( self, detail, paths )
     local skin = self.autotracks_skin
     if not skin or self.autotracks_skin_dirty or skin.detail ~= detail then return false end
+    if skin.key ~= self.autotracks_skin_key or #skin ~= #paths then return false end
+
+    -- after an edit the length has to stay close, while driving it can stretch
+    local lo, hi = 0.8, 1.25
+    if self.autotracks_skin_setup then lo, hi = 0.97, 1.03 end
 
     for i = 1, #skin do
         local side = skin[i]
@@ -390,7 +395,7 @@ local function isBuilt( self, detail, paths )
         if not first or not first:IsValid() then return false end
 
         local ratio = paths[i].total / side.total
-        if ratio < 0.8 or ratio > 1.25 then return false end
+        if ratio < lo or ratio > hi then return false end
     end
 
     return true
@@ -399,7 +404,7 @@ end
 local function build( self, detail, paths )
     destroy( self )
 
-    local skin = { detail = detail }
+    local skin = { detail = detail, key = self.autotracks_skin_key }
 
     local radius = math.huge
     local trackroots = self.tanktracktool_modeData.parts
@@ -496,6 +501,7 @@ function autotracks.setup( self )
     self.autotracks_data_model_le = trackverts_model( values.trackWidth, values.trackHeight, side, values.trackGuideY, values.trackGuideZ, values.trackGrouser )
     self.autotracks_data_model_ri = trackverts_model( values.trackWidth, values.trackHeight, -side, values.trackGuideY, values.trackGuideZ, values.trackGrouser )
 
+    local radius = math.huge
     local trackHeight = values.trackHeight * 0.5
     for i = 1, #self.tanktracktool_modeData.parts do
         local part = self.tanktracktool_modeData.parts[i][1]
@@ -503,11 +509,17 @@ function autotracks.setup( self )
         local trackRadius = part.radius + trackHeight
         part.trackRadius = trackRadius
         part.trackHeight = trackRadius + trackHeight + 0.1
+
+        radius = math_min( radius, math_abs( trackRadius ) )
     end
 
     self.autotracks_data_ready = nil
 
-    self.autotracks_skin_dirty = true
+    -- everything the meshes are made from, a resync with the same values keeps them
+    self.autotracks_skin_key = string.format( "%s %s %s %s %s %s %s %s %s", values.trackMaterial, values.trackWidth, values.trackHeight, side,
+        values.trackGuideY, values.trackGuideZ, values.trackGrouser, values.trackRes, radius )
+    self.autotracks_skin_setup = true
+
     self.autotracks_skin_paths = self.autotracks_skin_paths or {}
     self.autotracks_skin_last = {}
 end
@@ -548,6 +560,7 @@ function autotracks.think( self )
             placeBones( skin[i], paths[i] )
         end
     end
+    self.autotracks_skin_setup = nil
 
     self.autotracks_data_ready = true
 end

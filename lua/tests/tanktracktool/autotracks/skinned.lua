@@ -171,6 +171,7 @@ return {
                 local made = state.backend.stats.meshes
                 state.backend:resetStats()
 
+                track.values.trackWidth = 30
                 track:setup()
                 track:think()
 
@@ -180,6 +181,35 @@ return {
                 state.backend:resetStats()
                 track:think()
                 expect( state.backend.stats.meshes ).to.equal( 0 )
+            end
+        },
+
+        {
+            name = "Doesn't rebuild when set up again with the same values",
+            func = function( state )
+                local track = state.track():build()
+                state.backend:resetStats()
+
+                track.values.trackColor = "200 120 80 255"
+                track:setup()
+                track:think()
+
+                expect( state.backend.stats.meshes ).to.equal( 0 )
+                expect( state.backend.stats.destroyed ).to.equal( 0 )
+            end
+        },
+
+        {
+            name = "Rebuilds when an edit makes the track longer",
+            func = function( state )
+                local track = state.track():build()
+                state.backend:resetStats()
+
+                track:moveWheel( 1, Vector( 20, 0, 0 ) )
+                track:setup()
+                track:think()
+
+                expect( state.backend.stats.meshes ).to.beGreaterThan( 0 )
             end
         },
 
