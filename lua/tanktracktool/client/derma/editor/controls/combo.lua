@@ -88,7 +88,7 @@ function PANEL:SetupMenu( comboBox, editData )
     if isstring( hasIcons ) then pattern = true elseif not istable( hasIcons ) then hasIcons = nil end
 
     -- default to editor theme
-    local bICon, bSkin
+    local bIcon, bSkin
     if not hasIcons then
         bIcon = "icon16/bullet_white.png"
         bSkin = self:GetEditorSkin().colorHeader
