@@ -295,7 +295,11 @@ local function batchModel( model, mask )
 
         local per = math.min( math.floor( batch_bones / math.max( 1, #bones ) ), math.floor( batch_verts / math.max( 1, tris ) ) )
         if ok and per > 0 then
-            info = { subs = meshes, bones = bones, poses = poses, slots = slots, per = per }
+            -- static props skip bone setup, so their bone matrix never carries RenderMultiply
+            local mdl = util.GetModelInfo( model )
+            local static = mdl and bit.band( mdl.Flags or 0, 0x10 ) ~= 0
+
+            info = { subs = meshes, bones = bones, poses = poses, slots = slots, per = per, static = static }
         end
     end
 
@@ -387,6 +391,10 @@ local function batchRel( part, info, left, controller )
     csent:SetupBones()
 
     local rel = readRel( csent, info )
+    if rel and info.static and part.scale_m and not part.setupscale then
+        for b = 1, #rel do rel[b] = part.scale_m * rel[b] end
+    end
+
     if not rel or not push then
         resetBones( csent )
         return rel
