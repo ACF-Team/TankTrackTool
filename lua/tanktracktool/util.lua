@@ -116,9 +116,6 @@ function tanktracktool.util.getMaterial( material )
     if material == "" then return material end
     if goodmat[material] == nil then
         goodmat[material] = Material( material ):IsError()
-        if not goodmat[material] then
-            material = errormat
-        end
     end
     if goodmat[material] == true then
         material = errormat

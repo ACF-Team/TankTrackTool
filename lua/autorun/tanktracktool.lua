@@ -8,7 +8,6 @@ if SERVER then
     AddCSLuaFile( "tanktracktool/property.lua" )
 
     AddCSLuaFile( "tanktracktool/client/render/mode.lua" )
-    AddCSLuaFile( "tanktracktool/client/render/effects.lua" )
     AddCSLuaFile( "tanktracktool/client/render/autotracks.lua" )
 
     AddCSLuaFile( "tanktracktool/client/derma/editor/editor.lua" )
@@ -32,12 +31,13 @@ end
 
 if CLIENT then
 
+    game.AddParticles( "particles/tanktracktool.pcf" )
+
     include( "tanktracktool/util.lua" )
     include( "tanktracktool/netvar.lua" )
     include( "tanktracktool/property.lua" )
 
     include( "tanktracktool/client/render/mode.lua" )
-    include( "tanktracktool/client/render/effects.lua" )
     include( "tanktracktool/client/render/autotracks.lua" )
 
     include( "tanktracktool/client/derma/editor/editor.lua" )

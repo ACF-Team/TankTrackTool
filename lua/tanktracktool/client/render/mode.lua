@@ -238,6 +238,384 @@ local function renderme( self, empty )
     end
 end
 
+
+--[[
+    batched parts, plain models are drawn as one skinned mesh per model and material instead of a DrawModel each
+]]
+local batch_bones = 50
+local batch_verts = 65000
+
+-- model and bodygroups -> what its mesh needs, false when it can't be batched
+local batch_models = {}
+
+-- model, bodygroups and instance count -> meshes, shared by every tank
+local batch_meshes = {}
+
+local _batchmat = Matrix()
+local _batchvec = Vector()
+
+local function bodygroupMask( csent )
+    local mask, base = 0, 1
+    for i = 0, csent:GetNumBodyGroups() - 1 do
+        mask = mask + csent:GetBodygroup( i ) * base
+        base = base * math.max( 1, csent:GetBodygroupCount( i ) )
+    end
+    return mask
+end
+
+-- rigid models only, every vertex on one bone
+local function batchModel( model, mask )
+    local key = model .. "#" .. mask
+    local info = batch_models[key]
+    if info ~= nil then return info, key end
+
+    info = false
+
+    local meshes, bind = util.GetModelMeshes( model, 0, mask )
+    if meshes and meshes[1] then
+        local slots, bones, poses, tris = {}, {}, {}, 0
+        local ok = true
+
+        for _, sub in ipairs( meshes ) do
+            tris = math.max( tris, #sub.triangles )
+            for _, v in ipairs( sub.triangles ) do
+                local w = v.weights
+                if not w or #w ~= 1 then ok = false break end
+
+                local b = w[1].bone
+                if not slots[b] then
+                    local pose = bind and bind[b]
+                    bones[#bones + 1] = b
+                    poses[#bones] = pose and pose.matrix or Matrix()
+                    slots[b] = #bones
+                end
+            end
+            if not ok then break end
+        end
+
+        local per = math.min( math.floor( batch_bones / math.max( 1, #bones ) ), math.floor( batch_verts / math.max( 1, tris ) ) )
+        if ok and per > 0 then
+            info = { subs = meshes, bones = bones, poses = poses, slots = slots, per = per }
+        end
+    end
+
+    batch_models[key] = info
+    return info, key
+end
+
+local function batchMeshes( key, info, count )
+    key = key .. "#" .. count
+
+    local built = batch_meshes[key]
+    if built then return built end
+
+    built = {}
+
+    local nb = #info.bones
+    for s, sub in ipairs( info.subs ) do
+        local tris = sub.triangles
+        local imesh = Mesh( Material( sub.material ), 2 )
+
+        mesh.Begin( imesh, MATERIAL_TRIANGLES, #tris / 3 * count )
+        for k = 0, count - 1 do
+            for t = 1, #tris do
+                local v = tris[t]
+                local bone = k * nb + info.slots[v.weights[1].bone]
+
+                mesh.Position( v.pos )
+                mesh.Normal( v.normal )
+                if v.tangent then mesh.TangentS( v.tangent ) end
+                local ud = v.userdata
+                if ud then mesh.UserData( ud[1], ud[2], ud[3], ud[4] ) end
+                mesh.TexCoord( 0, v.u, v.v )
+                mesh.Color( 255, 255, 255, 255 )
+                mesh.BoneData( 0, bone, 1 )
+                mesh.BoneData( 1, bone, 0 )
+                mesh.AdvanceVertex()
+            end
+        end
+        mesh.End()
+
+        built[s] = imesh
+    end
+
+    batch_meshes[key] = built
+    return built
+end
+
+local _one = Vector( 1, 1, 1 )
+
+local function resetBones( csent )
+    for b = 0, csent:GetBoneCount() - 1 do
+        csent:ManipulateBonePosition( b, vector_origin )
+        csent:ManipulateBoneAngles( b, angle_zero )
+        csent:ManipulateBoneScale( b, _one )
+    end
+end
+
+local function readRel( csent, info )
+    local rel = {}
+    for b = 1, #info.bones do
+        local m = csent:GetBoneMatrix( info.bones[b] )
+        if not m then return end
+        rel[b] = m * info.poses[b]
+    end
+    return rel
+end
+
+-- the part's bone matrices at the world origin with its scale and bone setup, one side
+-- a part with batchmove has one bone pushed around every frame, move holds how far each bone shifts per unit of that push
+local function batchRel( part, info, left, controller )
+    local csent = part.csent
+
+    resetBones( csent )
+    csent:SetPos( vector_origin )
+    csent:SetAngles( angle_zero )
+
+    if part.setupscale then
+        part:setupscale( csent, left, controller )
+    else
+        if part.scale_m then
+            csent:EnableMatrix( "RenderMultiply", part.scale_m )
+        else
+            csent:DisableMatrix( "RenderMultiply" )
+        end
+    end
+
+    local push = part.batchmove
+    if push then csent:ManipulateBonePosition( push.bone, vector_origin ) end
+    csent:SetupBones()
+
+    local rel = readRel( csent, info )
+    if not rel or not push then
+        resetBones( csent )
+        return rel
+    end
+
+    local move = {}
+    for axis = 1, 3 do
+        _batchvec:SetUnpacked( axis == 1 and 1 or 0, axis == 2 and 1 or 0, axis == 3 and 1 or 0 )
+        csent:ManipulateBonePosition( push.bone, _batchvec )
+        csent:SetupBones()
+
+        local moved = readRel( csent, info )
+        if not moved then resetBones( csent ) return end
+
+        for b = 1, #info.bones do
+            local d = moved[b]:GetTranslation() - rel[b]:GetTranslation()
+            if d:LengthSqr() > 1e-8 then
+                move[b] = move[b] or { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+                move[b][axis], move[b][axis + 3], move[b][axis + 6] = d.x, d.y, d.z
+            end
+        end
+    end
+
+    resetBones( csent )
+    return rel, move
+end
+
+-- getMaterial hands out ___error for materials that don't exist, a csent draws its own material then
+local function override( name )
+    if not name or name == "" or name == "___error" then return end
+    return name
+end
+
+local function batchMaterials( part, info, csent )
+    local names = csent:GetMaterials()
+    local base = override( part.material )
+    local sub = part.submaterial
+
+    local mats = {}
+    for s, m in ipairs( info.subs ) do
+        local name = base or m.material
+        if not base and sub then
+            for i = 1, #names do
+                if names[i] == m.material then
+                    name = override( sub[i] ) or name
+                    break
+                end
+            end
+        end
+        mats[s] = name
+    end
+    return mats
+end
+
+-- a model is lit where it's first drawn each frame, so every group gets its own invisible one
+local function groupLight( controller, g )
+    local csents = controller.tanktracktool_modeData_csents
+    local key = "batchlight" .. g
+
+    local light = csents[key]
+    if not IsValid( light ) then
+        light = ClientsideModel( "models/props_c17/oildrum001_explosive.mdl" )
+        light:SetNoDraw( true )
+        csents[key] = light
+        tanktracktool.render.edicts = tanktracktool.render.edicts + 1
+    end
+
+    return light
+end
+
+local function buildBatch( controller )
+    local groups, order = {}, {}
+
+    local assem = controller.tanktracktool_modeData.parts
+    for i = 1, #assem do
+        local parts = assem[i]
+        for j = 1, #parts do
+            local part = parts[j]
+            local csent = part.csent
+            local color = part.color
+
+            part.batched = nil
+
+            local scale = part.scale_m and part.scale_m:GetScale()
+            local flat = scale and ( math.abs( scale.x ) < 1e-6 or math.abs( scale.y ) < 1e-6 or math.abs( scale.z ) < 1e-6 )
+
+            -- flat parts are invisible, the batch's bone read back would draw them full size
+            if IsValid( csent ) and not flat and not part.postrender and ( not color or color.a == 1 ) and ( part.render_l or part.render_r ) then
+                csent:SetModel( part.model )
+                csent:SetBodyGroups( part.bodygroup or "" )
+
+                local info, key = batchModel( part.model, bodygroupMask( csent ) )
+
+                local rel_l, move_l, rel_r, move_r
+                if info and part.render_l then rel_l, move_l = batchRel( part, info, true, controller ) end
+                if info and part.render_r then rel_r, move_r = batchRel( part, info, false, controller ) end
+
+                if info and ( rel_l or not part.render_l ) and ( rel_r or not part.render_r ) then
+                    local mats = batchMaterials( part, info, csent )
+                    local gkey = key .. "#" .. table.concat( mats, ";" ) .. "#" .. ( color and string.format( "%g %g %g", color.r, color.g, color.b ) or "" )
+
+                    -- each side is its own group, so each side is lit at its own parts
+                    local function getGroup( side )
+                        local group = groups[gkey .. side]
+                        if not group then
+                            local materials = {}
+                            for s = 1, #mats do materials[s] = Material( mats[s] ) end
+
+                            local tint = color and Vector( color.r, color.g, color.b ) or Vector( 1, 1, 1 )
+                            group = { key = key, info = info, materials = materials, tint = tint, inst = {}, center = Vector() }
+                            groups[gkey .. side] = group
+                            order[#order + 1] = group
+                        end
+                        return group
+                    end
+
+                    local push = part.batchmove
+                    if part.render_l then
+                        local group = getGroup( "#l" )
+                        group.inst[#group.inst + 1] = { part = part, left = true, rel = rel_l, move = move_l, push = push and push.le }
+                    end
+                    if part.render_r then
+                        local group = getGroup( "#r" )
+                        group.inst[#group.inst + 1] = { part = part, left = false, rel = rel_r, move = move_r, push = push and push.ri }
+                    end
+                    part.batched = true
+                end
+            end
+        end
+    end
+
+    if not order[1] then return false end
+
+    -- split each group into draws of at most info.per instances
+    for g, group in ipairs( order ) do
+        group.light = groupLight( controller, g )
+
+        local info, inst = group.info, group.inst
+        local nb = #info.bones
+        group.chunks = {}
+
+        for first = 1, #inst, info.per do
+            local count = math.min( info.per, #inst - first + 1 )
+            local chunk = { nb = nb, inst = {}, bones = {}, meshes = batchMeshes( group.key, info, count ) }
+            for k = 1, count do chunk.inst[k] = inst[first + k - 1] end
+            for b = 1, count * nb do chunk.bones[b] = Matrix() end
+            group.chunks[#group.chunks + 1] = chunk
+        end
+    end
+
+    return order
+end
+
+-- the meshes are lit by the last model drawn, the group's light in the middle of it
+local function lightGroup( group )
+    local light = group.light
+    if not IsValid( light ) then return end
+
+    local x, y, z, n = 0, 0, 0, 0
+    for c = 1, #group.chunks do
+        local inst = group.chunks[c].inst
+        for k = 1, #inst do
+            local part = inst[k].part
+            local px, py, pz = ( inst[k].left and part.le_posworld or part.ri_posworld ):Unpack()
+            x, y, z, n = x + px, y + py, z + pz, n + 1
+        end
+    end
+    if n == 0 then return end
+
+    group.center:SetUnpacked( x / n, y / n, z / n )
+
+    render.SetBlend( 0 )
+    light:SetPos( group.center )
+    light:SetupBones()
+    light:DrawModel()
+    render.SetBlend( 1 )
+end
+
+local function drawBatch( controller, batch, empty )
+    for g = 1, #batch do
+        local group = batch[g]
+
+        lightGroup( group )
+
+        -- model draws leave their fade and colour in the shared material, every draw sets its own
+        local tint = group.tint
+        local materials = group.materials
+        for c = 1, #group.chunks do
+            local chunk = group.chunks[c]
+            local bones, nb = chunk.bones, chunk.nb
+
+            for k = 1, #chunk.inst do
+                local inst = chunk.inst[k]
+                local part = inst.part
+
+                _batchmat:Identity()
+                _batchmat:Translate( inst.left and part.le_posworld or part.ri_posworld )
+                _batchmat:Rotate( inst.left and part.le_angworld or part.ri_angworld )
+
+                local rel, move = inst.rel, inst.move
+                local px, py, pz
+                if move then px, py, pz = inst.push:Unpack() end
+
+                for b = 1, nb do
+                    local m = bones[( k - 1 ) * nb + b]
+                    m:Set( _batchmat )
+
+                    local d = move and move[b]
+                    if d then
+                        _batchvec:SetUnpacked( d[1] * px + d[2] * py + d[3] * pz, d[4] * px + d[5] * py + d[6] * pz, d[7] * px + d[8] * py + d[9] * pz )
+                        m:Translate( _batchvec )
+                    end
+
+                    m:Mul( rel[b] )
+                end
+            end
+
+            local meshes = chunk.meshes
+            for s = 1, #meshes do
+                local mat = materials[s]
+                mat:SetFloat( "$alpha", 1 )
+                mat:SetVector( "$color", tint )
+                render.SetMaterial( mat )
+                meshes[s]:DrawSkinned( bones, false )
+            end
+        end
+    end
+end
+
 --[[
     metatable
 ]]
@@ -423,11 +801,22 @@ function tanktracktool.render.mode( TYPE_ASSEM, CSENTS )
             render.SetColorModulation( 1, 1, 1 )
             render.SetBlend( 1 )
 
-            local assem = controller.tanktracktool_modeData.parts
+            local data = controller.tanktracktool_modeData
+            local batch = data.batch
+            if batch == nil then
+                batch = buildBatch( controller )
+                data.batch = batch
+            end
+
+            -- batch first, translucent parts drawn before it would get covered up
+            if batch then drawBatch( controller, batch, empty ) end
+
+            local assem = data.parts
             for i = 1, #assem do
                 local parts = assem[i]
                 for j = 1, #parts do
-                    parts[j]:renderme( eyepos, eyedir, empty )
+                    local part = parts[j]
+                    if not part.batched then part:renderme( eyepos, eyedir, empty ) end
                 end
             end
 
