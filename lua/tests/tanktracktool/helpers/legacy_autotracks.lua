@@ -1,6 +1,9 @@
 
 -- the track renderer from before skinned meshes, the tests compare the new one against it
 
+-- gluatest runs every file in tests/ on its own, only load inside fake_render
+if not mesh then return {} end
+
 local cam, math, mesh, table, render =
       cam, math, mesh, table, render
 
